@@ -55,11 +55,15 @@ gen_unstructured = random $ do
 --   * Counters (mcycle/minstret/mhpmcounter* 0xb00-0xb9f, cycle/time/instret/
 --     hpmcounter* 0xc00-0xc9f): their values depend on timing and on how each
 --     implementation counts, so they cannot be compared.
+--   * Debug triggers (tselect/tdata*/tinfo/mcontext, 0x7a0-0x7af) and
+--     mconfigptr (0xf15): QEMU implements them, the Sail model does not.
 accessesMissingSailCSR :: Integer -> Bool
 accessesMissingSailCSR i = opcode == 0x73 && funct3 /= 0 && funct3 /= 4
                            && (csr == 0x301 || (csr >= 0x323 && csr <= 0x33f)
+                               || (csr >= 0x7a0 && csr <= 0x7af)
                                || (csr >= 0xb00 && csr <= 0xb9f)
-                               || (csr >= 0xc00 && csr <= 0xc9f))
+                               || (csr >= 0xc00 && csr <= 0xc9f)
+                               || csr == 0xf15)
   where opcode = i .&. 0x7f
         funct3 = (i `shiftR` 12) .&. 0x7
         csr    = (i `shiftR` 20) .&. 0xfff
