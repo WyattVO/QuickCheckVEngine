@@ -55,6 +55,7 @@ module QuickCheckVEngine.RVFI_DII.RVFI (
 , rvfiIsTrap
 , rvfiCheck
 , rvfiCheckAndShow
+, rvfiIsScOutcomeMismatch
 , rvfiCheckMagicBytes
 , rvfiReadDataPacketWithMagic
 , rvfiReadV1Response
@@ -525,6 +526,18 @@ rvfiCheck strict is64 x y
         insnBits i = if isCompressed (rvfi_insn x) || isCompressed (rvfi_insn y)
                        then i Data.Bits..&. 0xFFFF
                        else maskUpper False i
+
+-- | Whether two otherwise matching reports differ only in the outcome of a
+--   store-conditional (one succeeded, rd = 0, the other failed, rd = 1). The
+--   ISA lets an SC fail even when its reservation is still held (e.g. after a
+--   store to the reserved address from the same hart), so implementations may
+--   legitimately disagree and the rest of such a test is not comparable.
+rvfiIsScOutcomeMismatch :: RVFI_Packet -> RVFI_Packet -> Bool
+rvfiIsScOutcomeMismatch x y = isSc (rvfi_insn x) && rvfi_insn x == rvfi_insn y
+                              && rvfi_trap x == 0 && rvfi_trap y == 0
+                              && getRDAddr x == getRDAddr y
+                              && sort [getRDWData True x, getRDWData True y] == [0, 1]
+  where isSc i = i .&. 0x7f == 0x2f && (i `shiftR` 27) .&. 0x1f == 0x3
 
 assertCheck :: Bool -> RVFI_Packet -> [(RVFI_Packet -> Bool, String, Integer, String)] -> [String]
 assertCheck is64 x asserts

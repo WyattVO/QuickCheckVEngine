@@ -59,6 +59,7 @@ import System.IO.Unsafe
 import System.Timeout
 import Data.IORef
 import Data.Maybe
+import Data.Foldable (toList)
 import Data.Binary
 import Data.Time.Clock
 import Network.Socket
@@ -221,7 +222,13 @@ prop connA m_connB alive statsTmp onFail arch delay verbosity saveDir ignoreAsse
           let diff = mapWithAssertLastVal diffFunc trace
           when (verbosity > 1) $ mapM_ (putStrLn . snd) diff
           assertsFailed <- forM (gatherReports $ runAssertCompounds trace) handleAsserts
-          return $ property $ and (fst <$> diff) && (ignoreAsserts || not(or assertsFailed))
+          -- A test whose first difference is a store-conditional that one
+          -- implementation let succeed and the other let fail is inconclusive
+          -- (both are allowed by the ISA), so discard it instead of failing.
+          let firstMismatch = listToMaybe [ (a, b) | ((_, Just a, Just b), (False, _)) <- zip (toList trace) (toList diff) ]
+          return $ if maybe False (uncurry rvfiIsScOutcomeMismatch) firstMismatch
+                   then property Discard
+                   else property $ and (fst <$> diff) && (ignoreAsserts || not(or assertsFailed))
         onFirstDeath _ = return $ property False
         -- We don't want to shrink once one of the implementations has died,
         -- so always return that the property is true
