@@ -38,8 +38,20 @@ module QuickCheckVEngine.Templates.GenUnstructured (
 import QuickCheckVEngine.Template
 import QuickCheckVEngine.Templates.Utils.General
 import InstrCodec
+import Data.Bits
+import Test.QuickCheck (suchThat)
 
 gen_unstructured :: Template
 gen_unstructured = random $ do
-  instBits <- bits 32
+  instBits <- bits 32 `suchThat` (not . accessesMissingSailCSR)
   return $ inst $ MkInstruction instBits
+
+-- | CSR instructions on mhpmevent3-31 (0x323-0x33f). The privileged spec
+--   requires these CSRs (QEMU implements them), but the Sail CHERI-RISC-V
+--   model does not, so they would only report that gap in the reference model.
+accessesMissingSailCSR :: Integer -> Bool
+accessesMissingSailCSR i = opcode == 0x73 && funct3 /= 0 && funct3 /= 4
+                           && csr >= 0x323 && csr <= 0x33f
+  where opcode = i .&. 0x7f
+        funct3 = (i `shiftR` 12) .&. 0x7
+        csr    = (i `shiftR` 20) .&. 0xfff
