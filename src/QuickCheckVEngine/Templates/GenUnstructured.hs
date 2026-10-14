@@ -52,9 +52,14 @@ gen_unstructured = random $ do
 --     (QEMU implements them), but the Sail CHERI-RISC-V model does not.
 --   * misa (0x301): Sail always reports its full ISA (e.g. V and F/D), which
 --     the architecture string cannot turn off.
+--   * Counters (mcycle/minstret/mhpmcounter* 0xb00-0xb9f, cycle/time/instret/
+--     hpmcounter* 0xc00-0xc9f): their values depend on timing and on how each
+--     implementation counts, so they cannot be compared.
 accessesMissingSailCSR :: Integer -> Bool
 accessesMissingSailCSR i = opcode == 0x73 && funct3 /= 0 && funct3 /= 4
-                           && (csr == 0x301 || (csr >= 0x323 && csr <= 0x33f))
+                           && (csr == 0x301 || (csr >= 0x323 && csr <= 0x33f)
+                               || (csr >= 0xb00 && csr <= 0xb9f)
+                               || (csr >= 0xc00 && csr <= 0xc9f))
   where opcode = i .&. 0x7f
         funct3 = (i `shiftR` 12) .&. 0x7
         csr    = (i `shiftR` 20) .&. 0xfff
