@@ -500,7 +500,7 @@ rvfiCheck strict is64 x y
   | otherwise = case errors of [] -> Nothing
                                xs -> Just $ intercalate ", " xs
   where errors = catMaybes
-          [ checkField (strict || rvfi_trap x == 0) "insn" printHex (maskUpper False (rvfi_insn x)) (maskUpper False (rvfi_insn y)),
+          [ checkField (strict || rvfi_trap x == 0) "insn" printHex (insnBits (rvfi_insn x)) (insnBits (rvfi_insn y)),
             checkField True "trap" show (rvfi_trap x) (rvfi_trap y),
             checkField True "halt" show (rvfi_halt x) (rvfi_halt y),
             checkOptionalField True "mode" show (rvfi_mode x) (rvfi_mode y),
@@ -517,6 +517,14 @@ rvfiCheck strict is64 x y
             _checkField strict "mem_rdata" (compareMemData is64 x y rvfi_mem_rmask rvfi_mem_rdata) "" -- TODO: context
           ]
         printHex x = "0x" ++ showHex x ""
+        -- A compressed instruction is only 16 bits long, so the upper half of
+        -- rvfi_insn is not part of it: RVFI requires it to be zero, but some
+        -- implementations echo the whole injected word. Compare only the
+        -- instruction bits so that difference is not reported as a mismatch.
+        isCompressed i = i Data.Bits..&. 3 /= 3
+        insnBits i = if isCompressed (rvfi_insn x) || isCompressed (rvfi_insn y)
+                       then i Data.Bits..&. 0xFFFF
+                       else maskUpper False i
 
 assertCheck :: Bool -> RVFI_Packet -> [(RVFI_Packet -> Bool, String, Integer, String)] -> [String]
 assertCheck is64 x asserts
