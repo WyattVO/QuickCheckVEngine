@@ -57,9 +57,11 @@ gen_unstructured = random $ do
 --     implementation counts, so they cannot be compared.
 --   * Debug triggers (tselect/tdata*/tinfo/mcontext, 0x7a0-0x7af) and
 --     mconfigptr (0xf15): QEMU implements them, the Sail model does not.
+--   * seed (0x015): the Zkr entropy source returns random bits by design.
 accessesMissingSailCSR :: Integer -> Bool
 accessesMissingSailCSR i = opcode == 0x73 && funct3 /= 0 && funct3 /= 4
-                           && (csr == 0x301 || (csr >= 0x323 && csr <= 0x33f)
+                           && (csr == 0x015 || csr == 0x301
+                               || (csr >= 0x323 && csr <= 0x33f)
                                || (csr >= 0x7a0 && csr <= 0x7af)
                                || (csr >= 0xb00 && csr <= 0xb9f)
                                || (csr >= 0xc00 && csr <= 0xc9f)
