@@ -177,12 +177,27 @@ gen_cache conf has_caplen = random $
      return $ prologue
               <> repeatTillEnd (dist $ concat insts)
 
+-- The CHERI PTE bits are 59-63: CRG, CRM, CD, CR, CW. The Sail CHERI-RISC-V
+-- model only implements CR and CW, and it never enforces CW: a tagged
+-- capability store to a page with CW clear succeeds instead of raising a
+-- capability page fault. So only generate PTEs it judges correctly:
+-- CW = CD = 1 and CRG = CRM = 0, with CR random. CW = 0, CD and the
+-- load-capability generation bits are covered by regressions/qemu-only.
+--
+-- Privileged spec 1.13 reserves D, A and U in non-leaf PTEs (a page fault if
+-- set), while the Sail model follows the earlier spec and ignores them, so keep
+-- them clear in non-leaf PTEs (R = W = X = 0).
 gen_pte_perms = random $
-  do lperms <- bits 10
-     uperms <- bits 5
+  do lperms' <- bits 10
+     let lperms = if lperms' Data.Bits..&. 0xe == 0 then lperms' Data.Bits..&. complement 0xd0
+                                          else lperms'
+     cr <- bits 1
+     let uperms = 0x10 .|. (cr `shiftL` 3) .|. 0x4
      clg0 <- bits 2
      clg1 <- bits 2
-     return $ shrinkScope $ instSeq [ori 1 0 uperms, -- two cheri pte bits
+     -- Don't let shrinking drop parts of the PTE construction: that produces
+     -- PTEs the generator avoids (e.g. CW = 0).
+     return $ shrinkScope $ noShrink (instSeq [ori 1 0 uperms, -- CHERI pte bits
                                      slli 1 1 16,
                                      ori 1 1 0x000, -- 11 msbs of PA
                                      slli 1 1 11,
@@ -201,7 +216,7 @@ gen_pte_perms = random $
                                      add 5 5 6,
                                      lui 7 0x40000,
                                      slli 7 7 1,
-                                     sd 7 1 0]
+                                     sd 7 1 0])
                                      <>
                                      csrw (unsafe_csrs_indexFromName "satp") 5
                                      <>
@@ -220,7 +235,7 @@ gen_pte_perms = random $
 
 gen_pte39_trans_core lxReg addrReg pteReg = random $
   do let leafperms = 0xFF
-     let parentperms = 0xF1
+     let parentperms = 0x21 -- G, V: no D/A/U in non-leaf PTEs (see gen_pte_perms)
      l2perms <- elements [leafperms, parentperms]
      l1perms <- elements [leafperms, parentperms]
      l0perms <- elements [leafperms, parentperms]
@@ -252,7 +267,7 @@ gen_pte39_trans_core lxReg addrReg pteReg = random $
 
 gen_pte48_trans_core lxReg addrReg pteReg = random $
   do let leafperms = 0xFF
-     let parentperms = 0xF1
+     let parentperms = 0x21 -- G, V: no D/A/U in non-leaf PTEs (see gen_pte_perms)
      l3perms <- elements [leafperms, parentperms]
      l2perms <- elements [leafperms, parentperms]
      l1perms <- elements [leafperms, parentperms]
