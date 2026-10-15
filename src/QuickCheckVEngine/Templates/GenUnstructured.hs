@@ -58,9 +58,19 @@ gen_unstructured = random $ do
 --   * Debug triggers (tselect/tdata*/tinfo/mcontext, 0x7a0-0x7af) and
 --     mconfigptr (0xf15): QEMU implements them, the Sail model does not.
 --   * seed (0x015): the Zkr entropy source returns random bits by design.
+--   * mip (0x344): mip.MTIP (bit 7) reflects each implementation's timer.
+--     Sail advances mtime once every 100 instructions with mtimecmp left at
+--     0, so MTIP goes pending at the 100th instruction of a test; QEMU's
+--     mtime follows host time and its RVFI-DII mode never lets the timer
+--     fire. Masking MTIP in the comparison is not enough: the value read
+--     lands in a register and diverges in later instructions. So bit 7 is
+--     never compared, and the other mip bits are not compared here either
+--     (regression trace 22 still checks mip after reset). A test that
+--     actually takes the timer interrupt (mie.MTIE and mstatus.MIE set)
+--     would still diverge; this does not cover it.
 accessesMissingSailCSR :: Integer -> Bool
 accessesMissingSailCSR i = opcode == 0x73 && funct3 /= 0 && funct3 /= 4
-                           && (csr == 0x015 || csr == 0x301
+                           && (csr == 0x015 || csr == 0x301 || csr == 0x344
                                || (csr >= 0x323 && csr <= 0x33f)
                                || (csr >= 0x7a0 && csr <= 0x7af)
                                || (csr >= 0xb00 && csr <= 0xb9f)
