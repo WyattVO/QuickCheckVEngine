@@ -43,8 +43,25 @@ import Test.QuickCheck (suchThat)
 
 gen_unstructured :: Template
 gen_unstructured = random $ do
-  instBits <- bits 32 `suchThat` (not . accessesMissingSailCSR)
+  instBits <- bits 32 `suchThat` (\i -> not (accessesMissingSailCSR i
+                                              || accessesMissingSailSCR i))
   return $ inst $ MkInstruction instBits
+
+-- | CSpecialRW on special capability registers the Sail CHERI-RISC-V model
+--   cannot handle:
+--   * utidc, stidc, mtidc (3, 11, 27): QEMU implements the thread ID
+--     capability registers, the Sail model treats these numbers as reserved
+--     and raises an illegal instruction exception.
+--   * 0x14-0x17: missing from the Sail model's scr_name_map, so the model
+--     aborts ("Pattern match failure in scr_name_map_forwards") instead of
+--     raising an exception, which ends the test run.
+accessesMissingSailSCR :: Integer -> Bool
+accessesMissingSailSCR i = opcode == 0x5b && funct3 == 0 && funct7 == 0x01
+                           && (scr `elem` [3, 11, 27] || (scr >= 0x14 && scr <= 0x17))
+  where opcode = i .&. 0x7f
+        funct3 = (i `shiftR` 12) .&. 0x7
+        funct7 = (i `shiftR` 25) .&. 0x7f
+        scr    = (i `shiftR` 20) .&. 0x1f
 
 -- | CSR instructions whose result only reflects how the reference model is
 --   configured rather than the behaviour under test:
