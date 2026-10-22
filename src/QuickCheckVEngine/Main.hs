@@ -53,10 +53,12 @@ import System.Directory
 import Data.IORef
 import Data.Maybe
 import Data.Time.Clock
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Set (member,Set,fromList)
 import Control.Monad
 import Network.Socket
 import Test.QuickCheck
+import Test.QuickCheck.Random (mkQCGen)
 import Text.Regex.TDFA
 import qualified Data.Serialize as Cereal
 import qualified Data.ByteString as BSStrict
@@ -113,6 +115,7 @@ data Options = Options
     , csrExcludeRegex  :: Maybe String
     , optForceRVFIv1   :: Bool
     , statsFile        :: FilePath
+    , randomSeed       :: Maybe Int
     } deriving Show
 
 defaultOptions :: Options
@@ -144,6 +147,7 @@ defaultOptions = Options
     , csrExcludeRegex  = Nothing
     , optForceRVFIv1   = False
     , statsFile        = "last_stats.txt"
+    , randomSeed       = Nothing
     }
 
 options :: [OptDescr (Options -> Options)]
@@ -229,6 +233,9 @@ options =
   , Option []        ["statsFile"]
       (ReqArg (\f opts -> opts { statsFile = f }) "PATH")
         "Specify where to save a stats file of coverage information"
+  , Option []        ["seed"]
+      (ReqArg (\s opts -> opts { randomSeed = Just (read s) }) "N")
+        "Seed for the random tests (default: from the clock; printed either way)"
   ]
 
 commandOpts :: [String] -> IO (Options, [String])
@@ -289,6 +296,7 @@ allTests = [
            , ("all",        "All Verification",                                       const True,                               genAll)
            , ("random",     "Random Template",                                        const True,                               randomTest)
            , ("unstructured", "Unstructured random instruction bit Template",         const True,                               T.repeatTillEnd gen_unstructured)
+           , ("capexplicit", "Xcheri Extension Explicit-Authority Memory Verification", andPs [has_cheri, has_xlen_64],     T.repeatTillEnd genCHERIexplicitMem)
            ]
   where andPs = foldl (\k p x -> p x && k x) (const True)
 
@@ -360,8 +368,11 @@ main = withSocketsDo $ do
               onTrace trace = askAndSave sourceFile (showAnnotatedTrace (isNothing m_implB) archDesc verbosity trace) (Just trace) testTrans
   let checkTrapAndSave sourceFile test = saveOnFail sourceFile test (check_mcause_on_trap :: Test TestResult -> Test TestResult)
   let checkResult = if verbosity > 1 then verboseCheckWithResult else quickCheckWithResult
-  let checkGen gen remainingTests =
-        checkResult (Args Nothing remainingTests 1 (testLen flags) (verbosity > 0) (if optShrink flags then 100000 else 0))
+  -- Every random run has a seed, so a failure can be reproduced with --seed.
+  baseSeed <- maybe ((`mod` 1000000000) . floor . (* 1000) <$> getPOSIXTime) return (randomSeed flags)
+  putStrLn $ "Random seed: " ++ show baseSeed
+  let checkGen gen remainingTests testSeed =
+        checkResult (Args (Just (mkQCGen testSeed, 0)) remainingTests 1 (testLen flags) (verbosity > 0) (if optShrink flags then 100000 else 0))
                     (prop implA m_implB alive statsTmp (checkTrapAndSave Nothing) archDesc (timeoutDelay flags) verbosity (if (optSaveAll flags) then (saveDir flags) else Nothing) (optIgnoreAsserts flags) (optStrict flags) gen)
   failuresRef <- newIORef 0
   let checkFile (memoryInitFile :: Maybe FilePath) (skipped :: Int) (fileName :: FilePath)
@@ -380,10 +391,10 @@ main = withSocketsDo $ do
                             return $ if isAlive then 0 else 1
         | otherwise = return $ skipped + 1
   --
-  let doCheck a b = do res <- checkGen a b
-                       case res of Failure {} -> modifyIORef failuresRef (1 +)
-                                   _ -> return ()
-                       return res
+  let doCheck a b c = do res <- checkGen a b c
+                         case res of Failure {} -> modifyIORef failuresRef (1 +)
+                                     _ -> return ()
+                         return res
   case instTraceFile flags of
     Just fileName -> do
       void $ checkFile (memoryInitFile flags) 0 fileName
@@ -395,19 +406,23 @@ main = withSocketsDo $ do
           when (skipped > 1) $ putStrLn $ "Warning: skipped " ++ show (skipped - 1) ++ " tests"
         Nothing -> do
           case instrSoc of
-            Nothing -> do let tests = [ template | template@(label,_,_,_) <- allTests
+            -- A template's seed depends on its place in allTests, not on the
+            -- include/exclude regexes, so one template can be rerun alone.
+            Nothing -> do let tests = [ (idx, template) | (idx, template@(label,_,_,_)) <- zip [0..] allTests
                                       , checkRegex (testIncludeRegex flags) (testExcludeRegex flags) label ]
                           when (null tests) $ putStrLn "Warning: no tests selected"
                           mapM_ attemptTest tests
-              where attemptTest (label, description, archReqs, template) =
+              where attemptTest (idx, (label, description, archReqs, template)) =
                       if archReqs archDesc then do
-                        putStrLn $ label ++ " -- " ++ description ++ ":"
-                        (if optContinueOnFail flags then repeatTillTarget else (\f t -> f t >> return ())) ((numTests <$>) . (doCheck (wrapTest <$> (T.genTest testParams template)))) (nTests flags)
+                        let templateSeed = baseSeed + 7919 * idx
+                        putStrLn $ label ++ " -- " ++ description ++ " (seed " ++ show baseSeed ++ ", template seed " ++ show templateSeed ++ "):"
+                        let attempt k t = numTests <$> doCheck (wrapTest <$> (T.genTest testParams template)) t (templateSeed + k)
+                        (if optContinueOnFail flags then repeatTillTarget 0 else (\f t -> f 0 t >> return ())) attempt (nTests flags)
                       else
                         putStrLn $ "Warning: skipping " ++ label ++ " since architecture requirements not met"
-                    repeatTillTarget f t = if t <= 0 then return () else f t >>= (\x -> repeatTillTarget f (t - x))
+                    repeatTillTarget k f t = if t <= 0 then return () else f k t >>= (\x -> repeatTillTarget (k + 1) f (t - x))
             Just sock -> do
-              doCheck (liftM (wrapTest . singleSeq . (MkInstruction <$>)) $ listOf (genInstrServer sock)) (nTests flags)
+              doCheck (liftM (wrapTest . singleSeq . (MkInstruction <$>)) $ listOf (genInstrServer sock)) (nTests flags) baseSeed
               return ()
   --
   (finalStats :: Either String Stats) <- Cereal.decode <$> (BSStrict.readFile statsTmp)

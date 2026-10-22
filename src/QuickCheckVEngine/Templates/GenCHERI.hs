@@ -42,7 +42,8 @@ module QuickCheckVEngine.Templates.GenCHERI (
   genCHERIinspection,
   genCHERIarithmetic,
   genCHERImisc,
-  genCHERIcontrol
+  genCHERIcontrol,
+  genCHERIexplicitMem
 ) where
 
 import Test.QuickCheck
@@ -161,7 +162,7 @@ gen_simple_cclear = random $ do
                 ]
 
 gen_simple_fpclear :: Template
-gen_simple_fpclear = random $ do
+gen_simple_fpclear = fp_prologue $ random $ do
   mask <- bits 8
   quarter <- bits 2
   return $ dist [ (8, gen_rv64_fd)
@@ -232,3 +233,46 @@ genCHERIcontrol = random $ do
   return $ dist [ (2, instUniform $ rv32_xcheri_control srcAddr srcData dest)
                 , (1, inst (csetbounds dest srcData srcAddr))
                 , (2, instUniform $ rv32_i srcAddr srcData dest imm longImm fenceOp1 fenceOp2) ] -- TODO add csr
+
+-- | Explicit-authority loads, stores, LRs and SCs (lb.ddc ... sc.q.cap) with
+-- operands that can succeed: an address in memory for the .ddc forms and a
+-- capability derived from DDC for the .cap forms. Other templates give these
+-- instructions random registers, so they (almost) always trap. Sometimes the
+-- capability is too small for the access, loses one permission or its tag,
+-- so the fault paths are taken too.
+--
+-- A test either mixes loads and stores of every width, or pairs LRs and SCs
+-- of one width with loads: an SC after an LR of another width, or after a
+-- plain store to the reserved address, may fail or succeed (the RISC-V spec
+-- allows both, and QEMU and Sail differ).
+genCHERIexplicitMem :: Template
+genCHERIexplicitMem = random $ do
+  let addrReg = 2
+  let capReg  = 3
+  let tmpReg  = 4
+  dest    <- elements [1, 5, 6]
+  dataReg <- elements [1, 3, 5] -- 3 stores the (tagged) authority itself
+  base    <- elements [0x80000000, 0x80001000, 0x80004000]
+  offset  <- elements [0, 1, 2, 4, 6, 8, 16, 0x7f8]
+  len     <- elements [4, 8, 0x10, 0x20, 0x1000]
+  permBit <- elements [0, 2, 3, 4, 5, 6] -- G, Load, Store, LoadCap, StoreCap, StoreLocalCap
+  width   <- elements [0..4] -- b, h, w, d, q
+  reserved <- arbitrary
+  let auth mop = if testBit mop 3 then capReg else addrReg
+  let loads  = [cload dest (auth m) m | m <- [0x00..0x0f] ++ [0x17, 0x1f]]
+  let stores = [cstore dataReg (auth m) m | m <- [0x00..0x04] ++ [0x08..0x0c]]
+  -- lr.q.cap (0x1c) is left out: the Sail model adds the address to itself
+  -- (LoadResCapCap uses cs1.address + X(cs1)), so it always faults there.
+  let lrs = [cload dest (auth m) m | m <- [0x10 + width, 0x18 + width], m /= 0x1c]
+  let scs = [cstore dataReg (auth m) m | m <- [0x10 + width, 0x18 + width]]
+  let memOps = if reserved then loads ++ concat (replicate 4 (lrs ++ scs))
+                           else loads ++ stores
+  return $ shrinkScope $
+    noShrink (mconcat [ li64 addrReg (base + offset)
+                      , inst $ cspecialrw capReg 1 0 -- DDC
+                      , makeCap capReg capReg tmpReg base len offset ])
+    <> dist [ (6, mempty)
+            , (1, li64 tmpReg (0xffffffffffffffff `Data.Bits.xor` bit permBit)
+                  <> inst (candperm capReg capReg tmpReg))
+            , (1, inst $ ccleartag capReg capReg) ]
+    <> repeatN 6 (instUniform memOps)
