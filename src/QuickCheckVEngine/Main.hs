@@ -412,15 +412,23 @@ main = withSocketsDo $ do
                                       , checkRegex (testIncludeRegex flags) (testExcludeRegex flags) label ]
                           when (null tests) $ putStrLn "Warning: no tests selected"
                           mapM_ attemptTest tests
-              where attemptTest (idx, (label, description, archReqs, template)) =
-                      if archReqs archDesc then do
+              where attemptTest (idx, (label, description, archReqs, template)) = do
+                      isAlive <- readIORef alive
+                      if not isAlive then
+                        putStrLn $ "Skipping " ++ label ++ ": an implementation has died"
+                      else if archReqs archDesc then do
                         let templateSeed = baseSeed + 7919 * idx
                         putStrLn $ label ++ " -- " ++ description ++ " (seed " ++ show baseSeed ++ ", template seed " ++ show templateSeed ++ "):"
                         let attempt k t = numTests <$> doCheck (wrapTest <$> (T.genTest testParams template)) t (templateSeed + k)
                         (if optContinueOnFail flags then repeatTillTarget 0 else (\f t -> f 0 t >> return ())) attempt (nTests flags)
                       else
                         putStrLn $ "Warning: skipping " ++ label ++ " since architecture requirements not met"
-                    repeatTillTarget k f t = if t <= 0 then return () else f k t >>= (\x -> repeatTillTarget (k + 1) f (t - x))
+                    -- Once an implementation has died every test is discarded
+                    -- and the target is never reached, so stop instead.
+                    repeatTillTarget k f t = if t <= 0 then return () else do
+                      x <- f k t
+                      isAlive <- readIORef alive
+                      when isAlive $ repeatTillTarget (k + 1) f (t - x)
             Just sock -> do
               doCheck (liftM (wrapTest . singleSeq . (MkInstruction <$>)) $ listOf (genInstrServer sock)) (nTests flags) baseSeed
               return ()
